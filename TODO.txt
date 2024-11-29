@@ -1,0 +1,6 @@
+[x] extra register bc we don't use old length
+[x] screens between terms?
+[x] end after the 452nd term (~1000000 cycles) (term number 452 is the limit)
+[x] end screen
+[x] sound
+[x] title card w/ attribution

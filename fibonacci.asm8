@@ -1,0 +1,2271 @@
+;* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * 
+;===============================================================================
+;  ███████╗██╗██████╗        █████╗                                             
+;  ██╔════╝██║██╔══██╗      ██╔══██╗                                            
+;  █████╗  ██║██████╔╝█████╗╚█████╔╝                                            
+;  ██╔══╝  ██║██╔══██╗╚════╝██╔══██╗                                            
+;  ██║     ██║██████╔╝      ╚█████╔╝                                            
+;  ╚═╝     ╚═╝╚═════╝        ╚════╝                                             
+;                                                                               
+;  ██████╗ ███████╗███╗   ██╗ ██████╗██╗  ██╗███╗   ███╗ █████╗ ██████╗ ██╗  ██╗
+;  ██╔══██╗██╔════╝████╗  ██║██╔════╝██║  ██║████╗ ████║██╔══██╗██╔══██╗██║ ██╔╝
+;  ██████╔╝█████╗  ██╔██╗ ██║██║     ███████║██╔████╔██║███████║██████╔╝█████╔╝ 
+;  ██╔══██╗██╔══╝  ██║╚██╗██║██║     ██╔══██║██║╚██╔╝██║██╔══██║██╔══██╗██╔═██╗ 
+;  ██████╔╝███████╗██║ ╚████║╚██████╗██║  ██║██║ ╚═╝ ██║██║  ██║██║  ██║██║  ██╗
+;  ╚═════╝ ╚══════╝╚═╝  ╚═══╝ ╚═════╝╚═╝  ╚═╝╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝
+;===============================================================================                                                                               
+;* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * 
+;
+; by https://github.com/dreary_dugong
+; October 2024
+; 
+; Fib-8 Benchmark calculates and displays the first n terms of the fibonacci 
+; sequence by adding the two previous terms of the sequence. Notably, we opt not
+; to use the formula to calculate the terms faster. This program is intended to
+; be used to benchmark test chip-8 emulators, so the workload doesn't really
+; matter as long as it has reproducible results and takes a measurably long 
+; length of time even on fast emulators. In general, we do try to test the full
+; range of the chip-8 instruction set with the exception of user input.
+;
+;
+; In order to maximize the number of terms we can reach, we store terms in
+; memory as bignums* with sizes stored in registers.
+; *Because we want to convert terms to decimal notation, we choose to store them
+; in decimal-encoded binary form. This is because converting bignums to decimal
+; form would take a huge chunk of memory and more importantly an ungodly number
+; of cycles.
+; So memory looks something like this:
+; |---program---||---sprites---||---old_term---||---old_term reserved---||---new_term---||---new_term reserved---|
+; where each byte in old_term or new_term consists of two encoded decimal numbers
+; each consisting of 4 bits.
+; e.g. 0b10011001 = 99
+; The terms are ordered such that the most significant numbers come first in
+; each individual byte, but the least signficant bytes come first in memory.
+; So memory like 0b00100011 0b00000001 would represent the value 123.
+
+; register variable allocation
+alias new_term_len vE
+alias prev_carry vD
+alias temp vC
+alias new_index vB
+alias low_bitmask v9
+alias high_bitmask v8
+alias x_coord v7
+alias y_coord v6
+alias loop_max v5
+alias loop_index v4
+alias old_length, vA
+
+
+; manually allocate memory addresses
+alias OLD_TERM_START #0
+alias NEW_TERM_START #50
+alias X_COORD_STORAGE #100
+alias Y_COORD_STORAGE #101
+alias TERM_NUM_STORAGE #102
+alias TERM_NUM_DECIMAL #104
+
+
+START: 
+	; draw title screen
+	CALL DRAW_TITLE_SCREEN
+	
+    ; load constants
+    LD low_bitmask, 0b00001111
+    LD high_bitmask, 0b11110000
+
+    ; initialize memory
+    ; set max coords to two bytes out
+    LD I, X_COORD_STORAGE
+    LD v0, 8
+    LD [I], v0
+
+	; initialize term counter to 1
+	LD I, TERM_NUM_STORAGE
+	LD v0, 1
+	LD [I], v0
+
+    ; special case: term 1
+	CALL DRAW_TERM_SCREEN
+    LD new_term_len, 1 ; initialize term length
+    LD v0, 1 ; new term initial value
+
+	; save the previous term length for later
+	LD old_length, v0
+
+    ; draw first term (just hard code the first sprite)
+    LD I, SMALL_ZERO_ONE
+    LD x_coord, 0
+    LD y_coord, 0
+    DRW x_coord, y_coord, 4
+    CALL WAIT_2
+
+    ; save first term to old term storage
+    LD I, OLD_TERM_START
+	LD v0, 1
+    LD [I], v0
+
+    ; set up term 2 before starting the main loop
+    LD v0,  2 ; initialize term 2
+    LD I, NEW_TERM_START
+    LD [I], v0 ; save to memory
+
+	; increment term counter
+	LD I, TERM_NUM_STORAGE
+	LD v0, [I]
+	ADD v0, 1
+	LD [I], v0
+
+    ; print second term (hard coded sprite again)
+    CLS
+	CALL DRAW_TERM_SCREEN
+	LD x_coord, 0
+	LD y_coord, 0
+    LD I, SMALL_ZERO_TWO
+    DRW x_coord, y_coord, 4
+
+; main loop
+FIB_LOOP:
+    ; wait after printing the previous term
+    CALL WAIT_2
+
+	; increment term counter
+	LD I, TERM_NUM_STORAGE
+	LD v1, [I]
+	LD v2, 1
+	ADD v0, v2 
+	ADD v1, vF
+	LD [I], v1
+
+    ; clear screen from previous term
+    CLS
+	CALL DRAW_TERM_SCREEN
+
+	; reset byte indices from previous loop
+	LD new_index, 0
+
+    ; reset x and y coords
+	LD v2, old_length
+	LD old_length, new_term_len
+
+	; reset carry
+	LD prev_carry, 0
+
+    LD I, X_COORD_STORAGE ; fetch old max coords from storage
+    LD v1, [I]
+    LD x_coord, v0
+    LD y_coord, v1
+
+    ; if the term length hasn't increased, use the same max coords
+    ; Otherwise, increase them by one
+    SNE new_term_len, v2
+    JP BYTE_LOOP
+
+    ; the length has changed, so we move the max coord over by one byte
+    ADD x_coord, 8
+    LD v2, 64
+    SUB x_coord, v2 
+    ADD x_coord, 64
+    SNE vF, 0
+    JP SAVE_COORDS
+    LD x_coord, 0
+    ADD y_coord, 5
+
+    ; save the coords since they changed
+	SAVE_COORDS:
+    LD v0, x_coord
+    LD v1, y_coord
+    LD [I], v1
+
+
+    ; calculate the next number
+
+    BYTE_LOOP:
+        ; load bytes
+        LD I, OLD_TERM_START
+        ADD I, new_index
+        LD v0, [I]
+        LD v1, v0 ; move old byte to v1
+        LD I, NEW_TERM_START
+        ADD I, new_index 
+        LD v0, [I]
+		; right now we have: v1 - old byte, v0 - new byte
+        
+        ; store a copy to save later
+        LD temp, v0
+
+        ; isolate the lower digits
+        LD v2, v0
+        LD v3, v1
+        AND v2, low_bitmask
+        AND v3, low_bitmask
+		; right now we have v2 - new byte lower, v3 - old byte lower
+
+        ; add lower digit
+        ADD v2, prev_carry
+        ADD v2, v3
+		; now v2 contains the created low digit
+
+        ; copy over carry from lower digit
+		LD v3, 10 
+		SUB v2, v3
+		SE vF, 0
+		JP LOW_CARRY
+		ADD v2, 10
+		LD prev_carry, 0
+		JP AFTER_LOW_CARRY
+		LOW_CARRY:
+		LD prev_carry, 8 
+		AFTER_LOW_CARRY:
+
+        ; isolate the higher digits
+        AND v0, high_bitmask
+        AND v1, high_bitmask
+		SHR v0
+		SHR v1
+		; now we have v0 - new byte higher, v1 - old byte higher
+        
+        ; add higher digits
+        ADD v0, prev_carry
+        ADD v0, v1
+		; nowe we have v0 - created higher digit
+
+        ; copy over carry for next byte
+		LD v3, 80 ; (10 << 3) 
+		SUB v0, v3
+		SE vF, 0
+		JP HIGH_CARRY
+		ADD v0, 80 
+		LD prev_carry, 0
+		JP AFTER_HIGH_CARRY
+		HIGH_CARRY:
+		LD prev_carry, 1 
+        AFTER_HIGH_CARRY:
+
+		SHL v0
+
+        ; display byte of term
+        LD I, SMALL_ZERO_ZERO
+        ; count by tens
+        LD loop_max, v0
+        LD loop_index, 0
+        SNE loop_index, loop_max ; if tens is 0, skip to counting by ones
+        JP COUNT_BY_ONES
+        LD v3, 40
+        TEN_LOOP:
+            ADD I, v3
+            ADD loop_index, 0b00010000
+            SE loop_index, loop_max
+            JP TEN_LOOP
+
+        ; count by ones
+        COUNT_BY_ONES:
+            LD loop_max, v2
+            LD loop_index, 0
+            SNE loop_index, loop_max ; if ones is 0, skip counting
+            JP DRAW
+            LD v3, 4
+            ONE_LOOP:
+                ADD I, v3
+                ADD loop_index, 1
+                SE loop_index, loop_max
+                JP ONE_LOOP
+        
+        ; draw sprite
+        DRAW:
+        DRW x_coord, y_coord, 4
+
+        ; update x and y coordinates for the next draw
+		LD v3, 8
+        SUB x_coord, v3
+		SE vF, 0
+		JP STORE_BYTE
+		LD x_coord, 56
+		LD v3, 5 
+		SUB y_coord, v3
+
+        ; store new byte
+		STORE_BYTE:
+		LD I, NEW_TERM_START
+		ADD I, new_index
+        ADD v0, v2
+        LD [I], v0
+
+        ; store saved old byte
+        LD I, OLD_TERM_START
+        ADD I, new_index 
+        LD v0, temp 
+        LD [I], v0
+
+        ; increment indices
+        ADD new_index, 1
+
+        ; check if we're finished
+        ; the new term will always be longer, so check if the index is the length
+        SE new_index, new_term_len
+        JP BYTE_LOOP
+
+    ; we reached the end of the add here
+    ; check if there's one last carry
+    SNE prev_carry, 0
+    JP CHECK_FINISHED
+    
+	; we know there's a carry now. It has to be one. 
+	; so we display 01, add a 01 byte to storage, and increase the length by one
+
+	; save carry byte
+    LD I, NEW_TERM_START
+    ADD I, new_index ; new_index is already pointing to the next free byte
+    LD v0, prev_carry 
+    LD [I], v0 
+
+    ; increase the length
+	ADD new_term_len, 1
+	
+    ; display on screen 
+	LD I, SMALL_ZERO_ONE
+	DRW, x_coord, y_coord, 4
+
+    ; terminate after 451 terms
+    CHECK_FINISHED:
+		LD I, TERM_NUM_STORAGE
+		LD v1, [I]
+		SE v1, 1 ; check counter >= 256
+		JP FIB_LOOP
+		SE v0, 195
+        JP FIB_LOOP
+	
+	CALL DRAW_END_SCREEN
+
+; infinite loop so we don't overrun into coroutines
+TERMINATE:
+    JP TERMINATE
+
+; wait 2 seconds using the delay register
+WAIT_2:
+    LD v0, 120 
+    LD DT, v0
+
+    WAIT_LOOP:
+        LD vF, DT
+        SE vF, 0
+        JP WAIT_LOOP
+    RET
+
+; wait a quarter second using the delay register
+; and make a noise
+WAIT_QUARTER:
+    LD v0, 15 
+    LD DT, v0
+
+    WAIT_LOOP_:
+        LD vF, DT
+        SE vF, 0
+        JP WAIT_LOOP_
+    RET
+
+; wait an eight of a second using the delay register
+WAIT_EIGTH:
+    LD v0, 2 
+    LD DT, v0
+
+    WAIT_LOOP__:
+        LD vF, DT
+        SE vF, 0
+        JP WAIT_LOOP__
+    RET
+
+DRAW_TITLE_SCREEN:
+	CLS
+	CALL DRAW_SPIRAL
+	CALL WRITE_TITLE
+	CALL WAIT_2
+
+	CALL WRITE_ATTRIBUTION
+	CALL WAIT_2
+	CALL WAIT_2
+
+	CLS
+	RET
+
+DRAW_SEGMENT:
+	LD loop_max, 1
+	LD loop_index, 0
+	LD I, PIXEL
+	SEGMENT_LOOP:
+		DRW x_coord, y_coord, 1
+		COORD_INC:
+		ADD y_coord, 1
+		ADD loop_index, 1
+		SE loop_index, loop_max
+		JP SEGMENT_LOOP
+	
+	LD v0, 2
+	LD ST, v0
+	CALL WAIT_QUARTER
+	RET
+
+DRAW_SPIRAL:
+	; we use self-modifying code here not because it's more efficient
+	; (it'd be better to just pass parameters) but because it's cool
+	; and it stress tests the emulator 
+
+	; set up loop and draw first segment
+	LD x_coord, 31 
+	LD y_coord, 15 
+	CALL DRAW_SEGMENT
+
+	LD v2, 1
+
+	; second segment
+	; set loop max
+	; it's already at 1 so we're good
+	; set register to increment
+	LD I, COORD_INC 
+	LD v0, 0x77 ; switch to x coord
+	LD [I], v0
+	CALL DRAW_SEGMENT
+
+	; third segment
+	; set loop max
+	; already good (idk why but it works)
+	; set register to increment
+	; it's already at x so we're good here
+	CALL DRAW_SEGMENT
+
+	; fourth segment
+	; set loop max
+	LD I, DRAW_SEGMENT
+	ADD I, v2 
+	LD v0, 4
+	LD [I], v0
+	; set register to increment
+	LD I, COORD_INC
+	LD v0, 0x76 ; switch back to y register
+	LD v1, 255  ; subtract 1 instead of adding 1
+	LD [I], v1
+	CALL DRAW_SEGMENT
+
+	; fifth segment
+	; set loop max
+	LD I, DRAW_SEGMENT
+	ADD I, v2 
+	LD v0, 7
+	LD [I], v0
+	; set register to increment 
+	LD I, COORD_INC
+	LD v0, 0x77 ; switch back to x register
+	LD [I], v0
+	CALL DRAW_SEGMENT
+
+	; sixth segment
+	; set loop max
+	LD I, DRAW_SEGMENT
+	ADD I, v2 
+	LD v0, 12
+	LD [I], v0
+	; set register to increment
+	LD I, COORD_INC
+	LD v0, 0x76 ; switch back to y register
+	LD v1, 1	; add 1 instead of subtracting 1
+	LD [I], v1
+	CALL DRAW_SEGMENT
+
+	; seventh segment
+	; set loop max
+	LD I, DRAW_SEGMENT
+	ADD I, v2 
+	LD v0, 20
+	LD [I], v0
+	; set register to increment
+	LD I, COORD_INC
+	LD v0, 0x77 ; switch back to x register
+	LD [I], v0
+	CALL DRAW_SEGMENT
+
+	; eighth segment
+	; set loop max
+	LD I, DRAW_SEGMENT
+	ADD I, v2 
+	LD v0, 25
+	LD [I], v0
+	; set register to increment
+	LD I, COORD_INC
+	LD v0, 0x76 ; switch back to y register
+	LD v1, 255	; subtract 1 instead of adding 1
+	LD [I], v1
+	CALL DRAW_SEGMENT
+
+	RET
+
+WRITE_TITLE:
+	; we go pixel by pixel so it's good and slow and big af
+	LD I, PIXEL
+
+	; F - spine
+	LD x_coord, 5
+	LD y_coord, 0
+	CALL DRW_TITLE_PIXEL
+	ADD y_coord, 1
+	CALL DRW_TITLE_PIXEL
+	ADD y_coord, 1
+	CALL DRW_TITLE_PIXEL
+	ADD y_coord, 1
+	CALL DRW_TITLE_PIXEL
+	ADD y_coord, 1
+	CALL DRW_TITLE_PIXEL
+	CALL WAIT_QUARTER
+
+	; F - upper arm
+	ADD y_coord, 252
+	ADD x_coord, 1
+	CALL DRW_TITLE_PIXEL
+	ADD x_coord, 1
+	CALL DRW_TITLE_PIXEL
+	ADD x_coord, 1
+	CALL DRW_TITLE_PIXEL
+	CALL WAIT_QUARTER
+
+	; F - lower arm
+	ADD y_coord, 2
+	ADD x_coord, 254
+	CALL DRW_TITLE_PIXEL
+	ADD x_coord, 1 
+	CALL DRW_TITLE_PIXEL
+	LD v0, 10
+	LD ST, v0
+	CALL WAIT_QUARTER
+
+	; I - spine
+	ADD x_coord, 4
+	ADD y_coord, 255
+	CALL DRW_TITLE_PIXEL
+	ADD y_coord, 1
+	CALL DRW_TITLE_PIXEL
+	ADD y_coord, 1
+	CALL DRW_TITLE_PIXEL
+	CALL WAIT_QUARTER
+
+	; I - hat
+	ADD x_coord, 255
+	ADD y_coord, 253
+	CALL DRW_TITLE_PIXEL
+	ADD x_coord, 1
+	CALL DRW_TITLE_PIXEL
+	ADD x_coord, 1
+	CALL DRW_TITLE_PIXEL
+	CALL WAIT_QUARTER
+
+	; I - foot
+	ADD x_coord, 254
+	ADD y_coord, 4
+	CALL DRW_TITLE_PIXEL
+	ADD x_coord, 1
+	CALL DRW_TITLE_PIXEL
+	ADD x_coord, 1
+	CALL DRW_TITLE_PIXEL
+	LD v0, 10
+	LD ST, v0
+	CALL WAIT_QUARTER
+
+	; B - spine
+	ADD x_coord, 2
+	ADD y_coord, 252
+	CALL DRW_TITLE_PIXEL
+	ADD y_coord, 1
+	CALL DRW_TITLE_PIXEL
+	ADD y_coord, 1
+	CALL DRW_TITLE_PIXEL
+	ADD y_coord, 1
+	CALL DRW_TITLE_PIXEL
+	ADD y_coord, 1
+	CALL DRW_TITLE_PIXEL
+	CALL WAIT_QUARTER
+
+	; B - humps
+	ADD x_coord, 1
+	ADD y_coord, 252
+	CALL DRW_TITLE_PIXEL
+	ADD x_coord, 1
+	CALL DRW_TITLE_PIXEL
+	ADD x_coord, 1
+	ADD y_coord, 1
+	CALL DRW_TITLE_PIXEL
+	ADD x_coord, 255
+	ADD y_coord, 1
+	CALL DRW_TITLE_PIXEL
+	ADD x_coord, 255
+	CALL DRW_TITLE_PIXEL
+	CALL WAIT_EIGTH
+	ADD x_coord, 2
+	ADD y_coord, 1
+	CALL DRW_TITLE_PIXEL
+	ADD x_coord, 255
+	ADD y_coord, 1
+	CALL DRW_TITLE_PIXEL
+	ADD x_coord, 255
+	CALL DRW_TITLE_PIXEL
+	LD v0, 10
+	LD ST, v0
+	CALL WAIT_QUARTER
+
+	; O
+	ADD x_coord, 5
+	ADD y_coord, 252
+	CALL DRW_TITLE_PIXEL
+	ADD x_coord, 255
+	ADD y_coord, 1
+	CALL DRW_TITLE_PIXEL
+	ADD y_coord, 1
+	CALL DRW_TITLE_PIXEL
+	ADD y_coord, 1
+	CALL DRW_TITLE_PIXEL
+	ADD y_coord, 1
+	ADD x_coord, 1
+	CALL DRW_TITLE_PIXEL
+	ADD x_coord, 1
+	CALL DRW_TITLE_PIXEL
+	ADD x_coord, 1
+	CALL DRW_TITLE_PIXEL
+	ADD x_coord, 1
+	ADD y_coord, 255
+	CALL DRW_TITLE_PIXEL
+	ADD y_coord, 255
+	CALL DRW_TITLE_PIXEL
+	ADD y_coord, 255
+	CALL DRW_TITLE_PIXEL
+	ADD x_coord, 255
+	ADD y_coord, 255
+	CALL DRW_TITLE_PIXEL
+	ADD x_coord, 255
+	CALL DRW_TITLE_PIXEL
+	LD v0, 10
+	LD ST, v0
+	CALL WAIT_QUARTER
+
+	; N
+	ADD x_coord, 4
+	ADD y_coord, 4
+	CALL DRW_TITLE_PIXEL
+	ADD y_coord, 255
+	CALL DRW_TITLE_PIXEL
+	ADD y_coord, 255
+	CALL DRW_TITLE_PIXEL
+	ADD y_coord, 255
+	CALL DRW_TITLE_PIXEL
+	ADD y_coord, 255
+	CALL DRW_TITLE_PIXEL
+	ADD x_coord, 1
+	ADD y_coord, 1
+	CALL DRW_TITLE_PIXEL
+	ADD x_coord, 1
+	ADD y_coord, 1
+	CALL DRW_TITLE_PIXEL
+	ADD x_coord, 1
+	ADD y_coord, 1
+	CALL DRW_TITLE_PIXEL
+	ADD y_coord, 1
+	CALL DRW_TITLE_PIXEL
+	CALL WAIT_EIGTH
+	ADD y_coord, 254
+	CALL DRW_TITLE_PIXEL
+	ADD y_coord, 255
+	CALL DRW_TITLE_PIXEL
+	ADD y_coord, 255
+	CALL DRW_TITLE_PIXEL
+	LD v0, 10
+	LD ST, v0
+	CALL WAIT_QUARTER
+	
+	; A - arch
+	ADD x_coord, 2
+	ADD y_coord, 4
+	CALL DRW_TITLE_PIXEL
+	ADD y_coord, 255
+	CALL DRW_TITLE_PIXEL
+	ADD y_coord, 255
+	CALL DRW_TITLE_PIXEL
+	ADD y_coord, 255
+	CALL DRW_TITLE_PIXEL
+	ADD y_coord, 255
+	ADD x_coord, 1
+	CALL DRW_TITLE_PIXEL
+	ADD x_coord, 1
+	CALL DRW_TITLE_PIXEL
+	ADD x_coord, 1
+	ADD y_coord, 1
+	CALL DRW_TITLE_PIXEL
+	ADD y_coord, 1
+	CALL DRW_TITLE_PIXEL
+	ADD y_coord, 1
+	CALL DRW_TITLE_PIXEL
+	ADD y_coord, 1
+	CALL DRW_TITLE_PIXEL
+	CALL WAIT_QUARTER
+	
+	; A - crossbrace
+	ADD x_coord, 254
+	ADD y_coord, 254
+	CALL DRW_TITLE_PIXEL
+	ADD x_coord, 1
+	CALL DRW_TITLE_PIXEL
+	LD v0, 10
+	LD ST, v0
+	CALL WAIT_QUARTER
+
+	; C
+	ADD x_coord, 6
+	ADD y_coord, 255
+	CALL DRW_TITLE_PIXEL
+	ADD x_coord, 255
+	ADD y_coord, 255
+	CALL DRW_TITLE_PIXEL
+	ADD x_coord, 255
+	CALL DRW_TITLE_PIXEL
+	ADD x_coord, 255
+	ADD y_coord, 1
+	CALL DRW_TITLE_PIXEL
+	ADD y_coord, 1
+	CALL DRW_TITLE_PIXEL
+	ADD y_coord, 1
+	CALL DRW_TITLE_PIXEL
+	ADD y_coord, 1
+	ADD x_coord, 1
+	CALL DRW_TITLE_PIXEL
+	ADD x_coord, 1
+	CALL DRW_TITLE_PIXEL
+	ADD x_coord, 1
+	ADD y_coord, 255
+	CALL DRW_TITLE_PIXEL
+	LD v0, 10
+	LD ST, v0
+	CALL WAIT_QUARTER
+
+	; C
+	ADD x_coord, 5
+	ADD y_coord, 254
+	CALL DRW_TITLE_PIXEL
+	ADD x_coord, 255
+	ADD y_coord, 255
+	CALL DRW_TITLE_PIXEL
+	ADD x_coord, 255
+	CALL DRW_TITLE_PIXEL
+	ADD x_coord, 255
+	ADD y_coord, 1
+	CALL DRW_TITLE_PIXEL
+	ADD y_coord, 1
+	CALL DRW_TITLE_PIXEL
+	ADD y_coord, 1
+	CALL DRW_TITLE_PIXEL
+	ADD y_coord, 1
+	ADD x_coord, 1
+	CALL DRW_TITLE_PIXEL
+	ADD x_coord, 1
+	CALL DRW_TITLE_PIXEL
+	ADD x_coord, 1
+	ADD y_coord, 255
+	CALL DRW_TITLE_PIXEL
+	LD v0, 10
+	LD ST, v0
+	CALL WAIT_QUARTER
+
+	; I - hat
+	ADD x_coord, 2
+	ADD y_coord, 253
+	CALL DRW_TITLE_PIXEL
+	CALL WAIT_EIGTH
+	ADD x_coord, 2
+	CALL DRW_TITLE_PIXEL
+	CALL WAIT_QUARTER
+
+	; I - foot
+	ADD x_coord, 254
+	ADD y_coord, 4
+	CALL DRW_TITLE_PIXEL
+	CALL WAIT_EIGTH
+	ADD x_coord, 2
+	CALL DRW_TITLE_PIXEL
+	LD v0, 10
+	LD ST, v0
+	CALL WAIT_QUARTER
+
+	RET
+
+DRW_TITLE_PIXEL:
+	DRW x_coord, y_coord, 1 
+	CALL WAIT_EIGTH
+	RET
+
+WRITE_ATTRIBUTION:
+	LD x_coord, 14
+	LD y_coord, 27
+	LD I, ATTR_1
+	DRW x_coord, y_coord, 5
+
+	ADD x_coord, 7
+	LD I, ATTR_2
+	DRW x_coord, y_coord, 5
+
+	ADD x_coord, 8
+	LD I, ATTR_3
+	DRW x_coord, y_coord, 5
+
+	ADD x_coord, 8
+	LD I, ATTR_4
+	DRW x_coord, y_coord, 5
+
+	ADD x_coord, 8
+	LD I, ATTR_5
+	DRW x_coord, y_coord, 5
+	
+	ADD x_coord, 8
+	LD I, ATTR_6
+	DRW x_coord, y_coord, 5
+
+	ADD x_coord, 8
+	LD I, ATTR_7
+	DRW x_coord, y_coord, 5
+
+	LD v0, 60 
+	LD ST, v0
+
+	RET
+
+DRAW_TERM_SCREEN:
+	CLS
+
+	; word "TERM"
+	LD x_coord, 1
+	LD y_coord, 1
+	LD I, TERM_1
+	LD v0, 14 
+
+	LD loop_max, 8
+	LD loop_index, 0
+	TERM_SPRITE_LOOP:
+		DRW x_coord, y_coord, 13
+		ADD x_coord, 8
+		ADD I, v0 
+
+		ADD loop_index, 1
+		SE loop_index, loop_max
+		JP TERM_SPRITE_LOOP
+	
+	; term number
+	; convert to decimal
+	LD I, TERM_NUM_STORAGE
+	LD v1, [I]
+	LD loop_max, v1
+	LD I, TERM_NUM_DECIMAL
+	LD B, v0
+	LD v2, [I]
+
+	SNE loop_max, 0
+	JP DISPLAY_DIGITS
+
+	LD v3, 10
+	LD loop_index, 0
+	TERM_DECIMAL_ADD_LOOP:
+
+		ONES:
+		ADD v2, 6
+		SUB v2, v3 
+		SNE vF, 1
+		JP ONES_CARRY
+			ADD v2, 10
+			JP TENS
+		ONES_CARRY:
+			ADD v1, 1
+		
+		TENS:
+		ADD v1, 5
+		SUB v1, v3
+		SNE vF, 1
+		JP TENS_CARRY
+			ADD v1, 10
+			JP HUNDREDS
+		TENS_CARRY:
+			ADD v0, 1
+		
+		HUNDREDS:
+			ADD v0, 2
+		
+		ADD loop_index, 1
+		SE loop_index, loop_max
+		JP TERM_DECIMAL_ADD_LOOP
+	
+	; display on screen
+	DISPLAY_DIGITS:
+		LD x_coord, 6 
+		LD y_coord, 17
+
+		LD loop_max, v0
+		CALL DRAW_TERM_DIGIT
+
+		LD loop_max, v1
+		ADD x_coord, 9
+		CALL DRAW_TERM_DIGIT
+
+		LD loop_max, v2
+		ADD x_coord, 9
+		CALL DRAW_TERM_DIGIT
+
+	LD v0, 6
+	LD ST, v0
+
+	CALL WAIT_2
+	CLS
+	RET
+
+; draw a single digit of the term number in the correct font
+; depends on some registers being pre-set
+DRAW_TERM_DIGIT:
+	LD I, TERM_COUNTER_0_1
+	LD loop_index, 0
+	DISPLAY_DIGIT_LOOP:
+		SNE loop_index, loop_max
+		JP DISPLAY_DIGIT
+		LD vF, 28
+		ADD I, vF 
+		ADD loop_index, 1
+		JP DISPLAY_DIGIT_LOOP
+	DISPLAY_DIGIT:
+		DRW x_coord, y_coord, 14
+		ADD x_coord, 8
+		LD vF, 14
+		ADD I, vF
+		DRW x_coord, y_coord, 14
+	RET
+
+
+
+; display the end screen when the program terminates
+DRAW_END_SCREEN:
+	CLS
+	LD x_coord, 10 
+	LD y_coord, 2
+	LD loop_max, 6 
+	LD I, END_1_1
+	LD v1, 14 
+	LD v0, 0
+
+	INITIALIZE_END_LOOP:
+	LD loop_index, 0
+	END_LOOP:
+		DRW x_coord, y_coord, 14
+		ADD I, v1
+		ADD x_coord, 8
+
+		ADD loop_index, 1
+		SE loop_index, loop_max
+		JP END_LOOP
+
+	SNE v0, 1
+	RET
+
+	ADD v0, 1
+	ADD y_coord, 14
+	LD x_coord, 10 
+	JP INITIALIZE_END_LOOP
+
+
+; sprite of a single pixel for sequentially drawing the spiral
+sprite PIXEL
+	0b10000000
+endsprite
+
+; sprites for writing attribution
+sprite ATTR_1
+	0b11001100
+	0b10101010
+	0b10101100
+	0b10101010
+	0b11001010
+endsprite
+sprite ATTR_2
+	0b1100100
+	0b1001010
+	0b1101110
+	0b1001010
+	0b1101010
+endsprite
+sprite ATTR_3
+	0b11001010
+	0b10101010
+	0b11000100
+	0b10100100
+	0b10100100
+endsprite
+sprite ATTR_4
+	0b00001100
+	0b00001010
+	0b00001010
+	0b00001010
+	0b11101100
+endsprite
+sprite ATTR_5
+	0b10101110
+	0b10101000
+	0b10101010
+	0b10101010
+	0b11101110
+endsprite
+sprite ATTR_6
+	0b11101110
+	0b10101010
+	0b10101010
+	0b10101010
+	0b11101010
+endsprite
+sprite ATTR_7
+	0b11100000
+	0b10000000
+	0b10100000
+	0b10100000
+	0b11100000
+endsprite
+
+; sprites for writing the term screen text
+sprite TERM_1
+	0b01111111
+	0b10011111
+	0b10111111
+	0b01111111
+	0b00001111
+	0b00001111
+	0b00001111
+	0b00001111
+	0b00001111
+	0b00001111
+	0b00001111
+	0b00001111
+	0b00000110
+endsprite
+sprite TERM_2
+	0b11100000
+	0b11110001
+	0b11110001
+	0b11100001
+	0b00000001
+	0b00000001
+	0b00000001
+	0b00000001
+	0b00000001
+	0b00000001
+	0b00000001
+	0b00000001
+	0b00000000
+endsprite
+sprite TERM_3
+	0b11111111
+	0b00111111
+	0b01111111
+	0b11110000
+	0b11110000
+	0b11111111
+	0b11111111
+	0b11111111
+	0b11110000
+	0b11110000
+	0b11111111
+	0b11111111
+	0b11111111
+endsprite
+sprite TERM_4
+	0b11100000
+	0b11110001
+	0b11100001
+	0b00000001
+	0b00000001
+	0b11100001
+	0b11110001
+	0b11100001
+	0b00000001
+	0b00000001
+	0b11100001
+	0b11110001
+	0b11100000
+endsprite
+sprite TERM_5
+	0b11111111
+	0b00111111
+	0b01111111
+	0b11111100
+	0b11111100
+	0b11111111
+	0b11111111
+	0b11111111
+	0b11111111
+	0b11111011
+	0b11111001
+	0b11111000
+	0b11110000
+endsprite
+sprite TERM_6
+	0b11000000
+	0b11100001
+	0b11110001
+	0b01110001
+	0b01110001
+	0b11110001
+	0b11100001
+	0b11000001
+	0b11100001
+	0b11110001
+	0b11110001
+	0b11110001
+	0b01100000
+endsprite
+sprite TERM_7
+	0b11111000
+	0b00111100
+	0b01111100
+	0b11111100
+	0b11111100
+	0b11111110
+	0b11111111
+	0b11111111
+	0b11111111
+	0b11111101
+	0b11111100
+	0b11111100
+	0b11111000
+endsprite
+sprite TERM_8
+	0b00111000
+	0b01111100
+	0b01111100
+	0b01111100
+	0b01111100
+	0b11111100
+	0b11111100
+	0b11111100
+	0b11111100
+	0b01111100
+	0b01111100
+	0b01111100
+	0b00111000
+endsprite
+
+; sprites for term number counter
+sprite TERM_COUNTER_0_1
+	0b00011111
+	0b00001111
+	0b01011111
+	0b01111111
+	0b01111111
+	0b01111111
+	0b01111111
+	0b01111111
+	0b01111111
+	0b01111111
+	0b01111111
+	0b01111111
+	0b00111111
+	0b00011111
+endsprite
+sprite TERM_COUNTER_0_2
+	0b11111100
+	0b11111110
+	0b11111111
+	0b00001111
+	0b00001111
+	0b00001111
+	0b00001111
+	0b00001111
+	0b00001111
+	0b00001111
+	0b00001111
+	0b11111111
+	0b11111110
+	0b11111100
+endsprite
+sprite TERM_COUNTER_1_1
+	0b00000000
+	0b00000000
+	0b00000000
+	0b00000000
+	0b00000000
+	0b00000000
+	0b00000000
+	0b00000000
+	0b00000000
+	0b00000000
+	0b00000000
+	0b00000000
+	0b00000000
+	0b00000000
+endsprite
+sprite TERM_COUNTER_1_2
+	0b01111110
+	0b10011111
+	0b10111111
+	0b01111111
+	0b00111111
+	0b00111111
+	0b00111111
+	0b00111111
+	0b00111111
+	0b00111111
+	0b00111111
+	0b00111111
+	0b00111111
+	0b00011110
+endsprite
+sprite TERM_COUNTER_2_1
+	0b00001111
+	0b00010011
+	0b00010111
+	0b00001111
+	0b00000000
+	0b00000111
+	0b00001111
+	0b00011111
+	0b00011111
+	0b00011111
+	0b00011111
+	0b00011111
+	0b00011111
+	0b00001111
+endsprite
+sprite TERM_COUNTER_2_2
+	0b11111100
+	0b11111110
+	0b11111111
+	0b11111111
+	0b00011111
+	0b11111111
+	0b11111111
+	0b11111110
+	0b11111100
+	0b10000000
+	0b11111110
+	0b11111111
+	0b11111111
+	0b11111110
+endsprite
+sprite TERM_COUNTER_3_1
+	0b00000111
+	0b00000011
+	0b00010111
+	0b00001111
+	0b00000000
+	0b00000111
+	0b00001111
+	0b00000111
+	0b00000000
+	0b00001111
+	0b00011111
+	0b00011111
+	0b00001111
+	0b00000111
+endsprite
+sprite TERM_COUNTER_3_2
+	0b11111100
+	0b11111110
+	0b11111111
+	0b11111111
+	0b00001111
+	0b11111111
+	0b11111111
+	0b11111111
+	0b00001111
+	0b11111111
+	0b11111111
+	0b11111111
+	0b11111111
+	0b11111110
+endsprite
+sprite TERM_COUNTER_4_1
+	0b00001111
+	0b00010011
+	0b00010111
+	0b00011111
+	0b00011111
+	0b00011111
+	0b00011111
+	0b00011111
+	0b00011111
+	0b00001111
+	0b00000111
+	0b00000000
+	0b00000000
+	0b00000000
+endsprite
+sprite TERM_COUNTER_4_2
+	0b00011000
+	0b10111100
+	0b10111100
+	0b10111100
+	0b10111100
+	0b10111100
+	0b10111100
+	0b11111110
+	0b11111111
+	0b11111111
+	0b11111110
+	0b00111100
+	0b00111100
+	0b00011000
+endsprite
+sprite TERM_COUNTER_5_1
+	0b00000011
+	0b00000100
+	0b00000101
+	0b00000111
+	0b00000111
+	0b00000111
+	0b00000111
+	0b00000011
+	0b00000000
+	0b00000011
+	0b00000111
+	0b00000111
+	0b00000111
+	0b00000011
+endsprite
+sprite TERM_COUNTER_5_2
+	0b11111110
+	0b11111111
+	0b11111111
+	0b11111110
+	0b11000000
+	0b11111100
+	0b11111110
+	0b11111111
+	0b00001111
+	0b11111111
+	0b11111111
+	0b11111111
+	0b11111110
+	0b11111100
+endsprite
+sprite TERM_COUNTER_6_1
+	0b00000011
+	0b00000001
+	0b00001011
+	0b00001111
+	0b00001111
+	0b00001111
+	0b00001111
+	0b00001111
+	0b00001111
+	0b00001111
+	0b00001111
+	0b00001111
+	0b00000111
+	0b00000011
+endsprite
+sprite TERM_COUNTER_6_2
+	0b11111100
+	0b11111110
+	0b11111100
+	0b11000000
+	0b11000000
+	0b11111100
+	0b11111110
+	0b11111111
+	0b10001111
+	0b10001111
+	0b11111111
+	0b11111111
+	0b11111110
+	0b11111100
+endsprite
+sprite TERM_COUNTER_7_1
+	0b00000011
+	0b00000100
+	0b00000101
+	0b00000011
+	0b00000000
+	0b00000000
+	0b00000000
+	0b00000000
+	0b00000001
+	0b00000001
+	0b00000001
+	0b00000001
+	0b00000001
+	0b00000000
+endsprite
+sprite TERM_COUNTER_7_2
+	0b11111110
+	0b11111111
+	0b11111111
+	0b11111111
+	0b00111111
+	0b01111110
+	0b11111100
+	0b11111000
+	0b11110000
+	0b11110000
+	0b11110000
+	0b11110000
+	0b11110000
+	0b11100000
+endsprite
+sprite TERM_COUNTER_8_1
+	0b00001111
+	0b00000111
+	0b00101111
+	0b00111111
+	0b00111111
+	0b00111111
+	0b00111111
+	0b00011111
+	0b00111111
+	0b00111111
+	0b00111111
+	0b00111111
+	0b00011111
+	0b00001111
+endsprite
+sprite TERM_COUNTER_8_2
+	0b11111100
+	0b11111110
+	0b11111111
+	0b11111111
+	0b10001111
+	0b10001111
+	0b11111111
+	0b11111110
+	0b10001111
+	0b10001111
+	0b11111111
+	0b11111111
+	0b11111110
+	0b11111100
+endsprite
+sprite TERM_COUNTER_9_1
+	0b00000011
+	0b00000001
+	0b00001011
+	0b00001111
+	0b00001111
+	0b00001111
+	0b00001111
+	0b00000111
+	0b00000011
+	0b00000000
+	0b00000000
+	0b00000000
+	0b00000001
+	0b00000011
+endsprite
+sprite TERM_COUNTER_9_2
+	0b11111100
+	0b11111110
+	0b11111111
+	0b11111111
+	0b11000111
+	0b11000111
+	0b11111111
+	0b11111111
+	0b11111110
+	0b00111110
+	0b01111110
+	0b11111100
+	0b11111000
+	0b11110000
+	0b11100000
+endsprite
+
+; sprites for the end screen
+sprite END_1_1
+	0b00001111
+	0b00001111
+	0b00000001
+	0b00000001
+	0b00000001
+	0b00000001
+	0b00000001
+	0b00000001
+	0b00000000
+	0b00000000
+	0b00000000
+	0b11111111
+	0b10000000
+	0b10111111
+endsprite
+sprite END_1_2
+	0b11110001
+	0b11110001
+	0b10000001
+	0b10000001
+	0b10000001
+	0b10000001
+	0b10000001
+	0b10000001
+	0b00000000
+	0b00000000
+	0b00000000
+	0b11000111
+	0b01000101
+	0b11000100
+endsprite
+sprite END_1_3
+	0b10000110
+	0b10000110
+	0b10000110
+	0b11111110
+	0b11111110
+	0b10000110
+	0b10000110
+	0b10000110
+	0b00000000
+	0b00000000
+	0b00000000
+	0b10000001
+	0b11000001
+	0b11100001
+endsprite
+sprite END_1_4
+	0b00111111
+	0b00111111
+	0b00110000
+	0b00111111
+	0b00111111
+	0b00110000
+	0b00111111
+	0b00111111
+	0b00000000
+	0b00000000
+	0b00000000
+	0b11000111
+	0b01000100
+	0b01000101
+endsprite
+sprite END_1_5
+	0b00000000
+	0b00000000
+	0b00000000
+	0b00000000
+	0b00000000
+	0b00000000
+	0b00000000
+	0b00000000
+	0b00000000
+	0b00000000
+	0b00000000
+	0b11111000
+	0b00000100
+	0b11111010
+endsprite
+sprite END_1_6
+	0b00000000
+	0b00000000
+	0b00000000
+	0b00000000
+	0b00000000
+	0b00000000
+	0b00000000
+	0b00000000
+	0b00000000
+	0b00000000
+	0b00000000
+	0b00000000
+	0b00000000
+	0b00000000
+endsprite
+sprite END_2_1
+	0b10100000
+	0b10100000
+	0b10100000
+	0b10111111
+	0b10000000
+	0b10111111
+	0b10100000
+	0b10100000
+	0b10100000
+	0b10111111
+	0b10000000
+	0b11111111
+	0b00000000
+	0b00000000
+endsprite
+sprite END_2_2
+	0b00000101
+	0b00000101
+	0b00000101
+	0b11000101
+	0b01000101
+	0b11000101
+	0b00000101
+	0b00000101
+	0b00000101
+	0b11000101
+	0b01000101
+	0b11000111
+	0b00000000
+	0b00000000
+endsprite
+sprite END_2_3
+	0b01100001
+	0b10110001
+	0b11011001
+	0b01101001
+	0b00101101
+	0b00110111
+	0b00011011
+	0b00001101
+	0b00000110
+	0b00000111
+	0b00000011
+	0b00000001
+	0b00000000
+	0b00000000
+endsprite
+sprite END_2_4
+	0b01000101
+	0b01000101
+	0b01000101
+	0b01000101
+	0b01000101
+	0b01000101
+	0b01000101
+	0b01000101
+	0b01000101
+	0b01000101
+	0b01000100
+	0b11000111
+	0b00000000
+	0b00000000
+endsprite
+sprite END_2_5
+	0b00001101
+	0b00000101
+	0b00000010
+	0b00000010
+	0b00000010
+	0b00000010
+	0b00000010
+	0b00000110
+	0b00001101
+	0b11111011
+	0b00000110
+	0b11111100
+	0b00000000
+	0b00000000
+endsprite
+sprite END_2_6
+	0b00000000
+	0b00000000
+	0b10000000
+	0b10000000
+	0b10000000
+	0b10000000
+	0b10000000
+	0b10000000
+	0b10000000
+	0b00000000
+	0b00000000
+	0b00000000
+	0b00000000
+	0b00000000
+	0b00000000
+endsprite
+
+; small number sprites
+; this lets us fit more lines on screen so we can reach higher terms
+; we could write a routine to reconstruct this in memory from digits
+; but I don't have infinite time and willpower 
+sprite SMALL_ZERO_ZERO
+	0b11101110
+	0b10101010
+	0b10101010
+	0b11101110
+endsprite
+sprite SMALL_ZERO_ONE
+	0b11100100
+	0b10101100
+	0b10100100
+	0b11101110
+endsprite
+sprite SMALL_ZERO_TWO
+	0b11101100
+	0b10100100
+	0b10101000
+	0b11101110
+endsprite
+sprite SMALL_ZERO_THREE
+	0b11101110
+	0b10100010
+	0b10101110
+	0b11101110
+endsprite
+sprite SMALL_ZERO_FOUR
+	0b11101010
+	0b10101110
+	0b10100010
+	0b11100010
+endsprite
+sprite SMALL_ZERO_FIVE
+	0b11101110
+	0b10101000
+	0b10100110
+	0b11101110
+endsprite
+sprite SMALL_ZERO_SIX
+	0b11101110
+	0b10101000
+	0b10101110
+	0b11101110
+endsprite
+sprite SMALL_ZERO_SEVEN
+	0b11101110
+	0b10100100
+	0b10101000
+	0b11101000
+endsprite
+sprite SMALL_ZERO_EIGHT
+	0b11101110
+	0b10101110
+	0b10101010
+	0b11101110
+endsprite
+sprite SMALL_ZERO_NINE
+	0b11101110
+	0b10101110
+	0b10100010
+	0b11101110
+endsprite
+sprite SMALL_ONE_ZERO
+	0b01001110
+	0b11001010
+	0b01001010
+	0b11101110
+endsprite
+sprite SMALL_ONE_ONE
+	0b01000100
+	0b11001100
+	0b01000100
+	0b11101110
+endsprite
+sprite SMALL_ONE_TWO
+	0b01001100
+	0b11000100
+	0b01001000
+	0b11101110
+endsprite
+sprite SMALL_ONE_THREE
+	0b01001110
+	0b11000010
+	0b01001110
+	0b11101110
+endsprite
+sprite SMALL_ONE_FOUR
+	0b01001010
+	0b11001110
+	0b01000010
+	0b11100010
+endsprite
+sprite SMALL_ONE_FIVE
+	0b01001110
+	0b11001000
+	0b01000110
+	0b11101110
+endsprite
+sprite SMALL_ONE_SIX
+	0b01001110
+	0b11001000
+	0b01001110
+	0b11101110
+endsprite
+sprite SMALL_ONE_SEVEN
+	0b01001110
+	0b11000100
+	0b01001000
+	0b11101000
+endsprite
+sprite SMALL_ONE_EIGHT
+	0b01001110
+	0b11001110
+	0b01001010
+	0b11101110
+endsprite
+sprite SMALL_ONE_NINE
+	0b01001110
+	0b11001110
+	0b01000010
+	0b11101110
+endsprite
+sprite SMALL_TWO_ZERO
+	0b11001110
+	0b01001010
+	0b10001010
+	0b11101110
+endsprite
+sprite SMALL_TWO_ONE
+	0b11000100
+	0b01001100
+	0b10000100
+	0b11101110
+endsprite
+sprite SMALL_TWO_TWO
+	0b11001100
+	0b01000100
+	0b10001000
+	0b11101110
+endsprite
+sprite SMALL_TWO_THREE
+	0b11001110
+	0b01000010
+	0b10001110
+	0b11101110
+endsprite
+sprite SMALL_TWO_FOUR
+	0b11001010
+	0b01001110
+	0b10000010
+	0b11100010
+endsprite
+sprite SMALL_TWO_FIVE
+	0b11001110
+	0b01001000
+	0b10000110
+	0b11101110
+endsprite
+sprite SMALL_TWO_SIX
+	0b11001110
+	0b01001000
+	0b10001110
+	0b11101110
+endsprite
+sprite SMALL_TWO_SEVEN
+	0b11001110
+	0b01000100
+	0b10001000
+	0b11101000
+endsprite
+sprite SMALL_TWO_EIGHT
+	0b11001110
+	0b01001110
+	0b10001010
+	0b11101110
+endsprite
+sprite SMALL_TWO_NINE
+	0b11001110
+	0b01001110
+	0b10000010
+	0b11101110
+endsprite
+sprite SMALL_THREE_ZERO
+	0b11101110
+	0b00101010
+	0b11101010
+	0b11101110
+endsprite
+sprite SMALL_THREE_ONE
+	0b11100100
+	0b00101100
+	0b11100100
+	0b11101110
+endsprite
+sprite SMALL_THREE_TWO
+	0b11101100
+	0b00100100
+	0b11101000
+	0b11101110
+endsprite
+sprite SMALL_THREE_THREE
+	0b11101110
+	0b00100010
+	0b11101110
+	0b11101110
+endsprite
+sprite SMALL_THREE_FOUR
+	0b11101010
+	0b00101110
+	0b11100010
+	0b11100010
+endsprite
+sprite SMALL_THREE_FIVE
+	0b11101110
+	0b00101000
+	0b11100110
+	0b11101110
+endsprite
+sprite SMALL_THREE_SIX
+	0b11101110
+	0b00101000
+	0b11101110
+	0b11101110
+endsprite
+sprite SMALL_THREE_SEVEN
+	0b11101110
+	0b00100100
+	0b11101000
+	0b11101000
+endsprite
+sprite SMALL_THREE_EIGHT
+	0b11101110
+	0b00101110
+	0b11101010
+	0b11101110
+endsprite
+sprite SMALL_THREE_NINE
+	0b11101110
+	0b00101110
+	0b11100010
+	0b11101110
+endsprite
+sprite SMALL_FOUR_ZERO
+	0b10101110
+	0b11101010
+	0b00101010
+	0b00101110
+endsprite
+sprite SMALL_FOUR_ONE
+	0b10100100
+	0b11101100
+	0b00100100
+	0b00101110
+endsprite
+sprite SMALL_FOUR_TWO
+	0b10101100
+	0b11100100
+	0b00101000
+	0b00101110
+endsprite
+sprite SMALL_FOUR_THREE
+	0b10101110
+	0b11100010
+	0b00101110
+	0b00101110
+endsprite
+sprite SMALL_FOUR_FOUR
+	0b10101010
+	0b11101110
+	0b00100010
+	0b00100010
+endsprite
+sprite SMALL_FOUR_FIVE
+	0b10101110
+	0b11101000
+	0b00100110
+	0b00101110
+endsprite
+sprite SMALL_FOUR_SIX
+	0b10101110
+	0b11101000
+	0b00101110
+	0b00101110
+endsprite
+sprite SMALL_FOUR_SEVEN
+	0b10101110
+	0b11100100
+	0b00101000
+	0b00101000
+endsprite
+sprite SMALL_FOUR_EIGHT
+	0b10101110
+	0b11101110
+	0b00101010
+	0b00101110
+endsprite
+sprite SMALL_FOUR_NINE
+	0b10101110
+	0b11101110
+	0b00100010
+	0b00101110
+endsprite
+sprite SMALL_FIVE_ZERO
+	0b11101110
+	0b10001010
+	0b01101010
+	0b11101110
+endsprite
+sprite SMALL_FIVE_ONE
+	0b11100100
+	0b10001100
+	0b01100100
+	0b11101110
+endsprite
+sprite SMALL_FIVE_TWO
+	0b11101100
+	0b10000100
+	0b01101000
+	0b11101110
+endsprite
+sprite SMALL_FIVE_THREE
+	0b11101110
+	0b10000010
+	0b01101110
+	0b11101110
+endsprite
+sprite SMALL_FIVE_FOUR
+	0b11101010
+	0b10001110
+	0b01100010
+	0b11100010
+endsprite
+sprite SMALL_FIVE_FIVE
+	0b11101110
+	0b10001000
+	0b01100110
+	0b11101110
+endsprite
+sprite SMALL_FIVE_SIX
+	0b11101110
+	0b10001000
+	0b01101110
+	0b11101110
+endsprite
+sprite SMALL_FIVE_SEVEN
+	0b11101110
+	0b10000100
+	0b01101000
+	0b11101000
+endsprite
+sprite SMALL_FIVE_EIGHT
+	0b11101110
+	0b10001110
+	0b01101010
+	0b11101110
+endsprite
+sprite SMALL_FIVE_NINE
+	0b11101110
+	0b10001110
+	0b01100010
+	0b11101110
+endsprite
+sprite SMALL_SIX_ZERO
+	0b11101110
+	0b10001010
+	0b11101010
+	0b11101110
+endsprite
+sprite SMALL_SIX_ONE
+	0b11100100
+	0b10001100
+	0b11100100
+	0b11101110
+endsprite
+sprite SMALL_SIX_TWO
+	0b11101100
+	0b10000100
+	0b11101000
+	0b11101110
+endsprite
+sprite SMALL_SIX_THREE
+	0b11101110
+	0b10000010
+	0b11101110
+	0b11101110
+endsprite
+sprite SMALL_SIX_FOUR
+	0b11101010
+	0b10001110
+	0b11100010
+	0b11100010
+endsprite
+sprite SMALL_SIX_FIVE
+	0b11101110
+	0b10001000
+	0b11100110
+	0b11101110
+endsprite
+sprite SMALL_SIX_SIX
+	0b11101110
+	0b10001000
+	0b11101110
+	0b11101110
+endsprite
+sprite SMALL_SIX_SEVEN
+	0b11101110
+	0b10000100
+	0b11101000
+	0b11101000
+endsprite
+sprite SMALL_SIX_EIGHT
+	0b11101110
+	0b10001110
+	0b11101010
+	0b11101110
+endsprite
+sprite SMALL_SIX_NINE
+	0b11101110
+	0b10001110
+	0b11100010
+	0b11101110
+endsprite
+sprite SMALL_SEVEN_ZERO
+	0b11101110
+	0b01001010
+	0b10001010
+	0b10001110
+endsprite
+sprite SMALL_SEVEN_ONE
+	0b11100100
+	0b01001100
+	0b10000100
+	0b10001110
+endsprite
+sprite SMALL_SEVEN_TWO
+	0b11101100
+	0b01000100
+	0b10001000
+	0b10001110
+endsprite
+sprite SMALL_SEVEN_THREE
+	0b11101110
+	0b01000010
+	0b10001110
+	0b10001110
+endsprite
+sprite SMALL_SEVEN_FOUR
+	0b11101010
+	0b01001110
+	0b10000010
+	0b10000010
+endsprite
+sprite SMALL_SEVEN_FIVE
+	0b11101110
+	0b01001000
+	0b10000110
+	0b10001110
+endsprite
+sprite SMALL_SEVEN_SIX
+	0b11101110
+	0b01001000
+	0b10001110
+	0b10001110
+endsprite
+sprite SMALL_SEVEN_SEVEN
+	0b11101110
+	0b01000100
+	0b10001000
+	0b10001000
+endsprite
+sprite SMALL_SEVEN_EIGHT
+	0b11101110
+	0b01001110
+	0b10001010
+	0b10001110
+endsprite
+sprite SMALL_SEVEN_NINE
+	0b11101110
+	0b01001110
+	0b10000010
+	0b10001110
+endsprite
+sprite SMALL_EIGHT_ZERO
+	0b11101110
+	0b11101010
+	0b10101010
+	0b11101110
+endsprite
+sprite SMALL_EIGHT_ONE
+	0b11100100
+	0b11101100
+	0b10100100
+	0b11101110
+endsprite
+sprite SMALL_EIGHT_TWO
+	0b11101100
+	0b11100100
+	0b10101000
+	0b11101110
+endsprite
+sprite SMALL_EIGHT_THREE
+	0b11101110
+	0b11100010
+	0b10101110
+	0b11101110
+endsprite
+sprite SMALL_EIGHT_FOUR
+	0b11101010
+	0b11101110
+	0b10100010
+	0b11100010
+endsprite
+sprite SMALL_EIGHT_FIVE
+	0b11101110
+	0b11101000
+	0b10100110
+	0b11101110
+endsprite
+sprite SMALL_EIGHT_SIX
+	0b11101110
+	0b11101000
+	0b10101110
+	0b11101110
+endsprite
+sprite SMALL_EIGHT_SEVEN
+	0b11101110
+	0b11100100
+	0b10101000
+	0b11101000
+endsprite
+sprite SMALL_EIGHT_EIGHT
+	0b11101110
+	0b11101110
+	0b10101010
+	0b11101110
+endsprite
+sprite SMALL_EIGHT_NINE
+	0b11101110
+	0b11101110
+	0b10100010
+	0b11101110
+endsprite
+sprite SMALL_NINE_ZERO
+	0b11101110
+	0b11101010
+	0b00101010
+	0b11101110
+endsprite
+sprite SMALL_NINE_ONE
+	0b11100100
+	0b11101100
+	0b00100100
+	0b11101110
+endsprite
+sprite SMALL_NINE_TWO
+	0b11101100
+	0b11100100
+	0b00101000
+	0b11101110
+endsprite
+sprite SMALL_NINE_THREE
+	0b11101110
+	0b11100010
+	0b00101110
+	0b11101110
+endsprite
+sprite SMALL_NINE_FOUR
+	0b11101010
+	0b11101110
+	0b00100010
+	0b11100010
+endsprite
+sprite SMALL_NINE_FIVE
+	0b11101110
+	0b11101000
+	0b00100110
+	0b11101110
+endsprite
+sprite SMALL_NINE_SIX
+	0b11101110
+	0b11101000
+	0b00101110
+	0b11101110
+endsprite
+sprite SMALL_NINE_SEVEN
+	0b11101110
+	0b11100100
+	0b00101000
+	0b11101000
+endsprite
+sprite SMALL_NINE_EIGHT
+	0b11101110
+	0b11101110
+	0b00101010
+	0b11101110
+endsprite
+sprite SMALL_NINE_NINE
+	0b11101110
+	0b11101110
+	0b00100010
+	0b11101110
+endsprite
